@@ -92,8 +92,12 @@ static bool uncompress_html(char **output, size_t *output_len) {
   return true;
 }
 
+// Cleared as well as freed: a keep-alive connection keeps its pss across
+// requests, and a stale pointer would be read and freed again by the next one.
 static void pss_buffer_free(struct pss_http *pss) {
   if (pss->buffer != (char *)index_html && pss->buffer != html_cache) free(pss->buffer);
+  pss->buffer = pss->ptr = NULL;
+  pss->len = 0;
 }
 
 // Queue the JSON answer to a POST. json-c performs the actual escaping in the
@@ -118,6 +122,8 @@ static void request_reset(struct pss_http *pss) {
     file_upload_detach(pss->upload);
     pss->upload = NULL;
   }
+  // A response cut off mid-transfer leaves its body behind.
+  pss_buffer_free(pss);
   free(pss->body);
   pss->body = NULL;
   pss->body_len = 0;
