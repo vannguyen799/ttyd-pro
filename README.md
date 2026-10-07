@@ -152,9 +152,9 @@ matching `version` in `html/package.json`), commit, push the `vMAJOR.MINOR.PATCH
 the workflow explicitly:
 
 ```bash
-git tag v1.11.0
-git push origin v1.11.0
-gh workflow run release.yml -f tag=v1.11.0
+git tag v1.11.1
+git push origin v1.11.1
+gh workflow run release.yml -f tag=v1.11.1
 ```
 
 **Check that the tag actually started a run, and dispatch if it didn't.** `release.yml` declares

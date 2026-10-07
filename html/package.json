@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "ttyd-pro-ui",
-  "version": "1.11.0",
+  "version": "1.11.1",
   "description": "Mobile-first web UI embedded in ttyd-pro",
   "repository": {
     "url": "https://github.com/vannguyen799/ttyd-pro.git",
