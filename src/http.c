@@ -1030,6 +1030,12 @@ int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
       return 0;
 
     case LWS_CALLBACK_CLOSED_HTTP:
+      // lws 4.5 reports the close of a connection that never completed a
+      // request — a bare connect, a half-sent header — to protocols[0] with no
+      // per-session data, so there is nothing to reset. Dereferencing it
+      // anyway took the whole server down every time a proxy dropped an idle
+      // spare connection.
+      if (pss == NULL) break;
       request_reset(pss);
       break;
 
