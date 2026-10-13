@@ -132,6 +132,7 @@ NAME=""
 NAME_EXPLICIT=0
 IDLE_SPEC=""
 NO_REAP=0
+CWD_SET=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -163,7 +164,11 @@ while [ $# -gt 0 ]; do
                     fi
                 fi
                 if [ -d "$REQ_DIR" ]; then
-                    cd "$REQ_DIR" || echo "warn: cd '$REQ_DIR' failed, staying in $(pwd)" >&2
+                    if cd "$REQ_DIR"; then
+                        CWD_SET=1
+                    else
+                        echo "warn: cd '$REQ_DIR' failed, staying in $(pwd)" >&2
+                    fi
                 fi
             fi
             ;;
@@ -327,6 +332,13 @@ attach_existing() {
     tmux set-option -t "$TGT" -g set-titles-string "$TMUX_TITLES_STRING" 2>/dev/null
     mark_owned
     set_browser_title "$TITLE"
+    # An explicit cwd: re-points the session's working directory, which is
+    # where its new windows open. Without it the session keeps the cwd it was
+    # first created (or restored) with, so a route whose cwd: has since changed
+    # would still open new windows in the old directory.
+    if [ "$CWD_SET" = 1 ]; then
+        exec tmux attach-session -t "$TGT" -c "$PWD"
+    fi
     exec tmux attach-session -t "$TGT"
 }
 
