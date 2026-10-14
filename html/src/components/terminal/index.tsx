@@ -12,6 +12,9 @@ interface Props extends XtermOptions {
     active?: boolean;
     // Bubbles the terminal's title up to the owning tab chip.
     onTitle?: (title: string) => void;
+    // Asked once, on mount: true when this mount is a "Restart session", so the
+    // first connect carries `restart`. The owner clears its flag on the call.
+    takeRestart?: () => boolean;
 }
 
 interface State {
@@ -29,6 +32,7 @@ export class Terminal extends Component<Props, State> {
     }
 
     async componentDidMount() {
+        if (this.props.takeRestart?.()) this.xterm.restartOnNextConnect();
         await this.xterm.refreshToken();
         this.xterm.open(this.container);
         this.xterm.connect();

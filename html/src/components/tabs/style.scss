@@ -296,7 +296,8 @@ $chrome-opacity: var(--tabbar-opacity, 1);
         white-space: nowrap;
     }
 
-    .tab-close {
+    .tab-close,
+    .tab-restart {
         flex: 0 0 auto;
         display: flex;
         align-items: center;

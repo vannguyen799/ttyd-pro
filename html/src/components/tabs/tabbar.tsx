@@ -1,5 +1,5 @@
 import { h, Component, JSX } from 'preact';
-import { clampColWidth, BAR_OPACITY_MIN, BAR_OPACITY_MAX, BAR_OPACITY_DEFAULT } from './model';
+import { backendFromSearch, clampColWidth, BAR_OPACITY_MIN, BAR_OPACITY_MAX, BAR_OPACITY_DEFAULT } from './model';
 import type { BarMode, BarPosition, TabInfo } from './model';
 
 interface Props {
@@ -25,6 +25,7 @@ interface Props {
     onRename: (id: string, title: string) => void;
     onSwitchGroup: (group: string) => void;
     onCloseGroup: (group: string) => void;
+    onRestart: (id: string) => void; // recreate the tab's session from its route (already confirmed)
 }
 
 interface State {
@@ -283,7 +284,7 @@ export class TabBar extends Component<Props, State> {
 
     private onChipPointerDown = (id: string, e: PointerEvent) => {
         if (this.state.editingId) return; // no dragging while renaming
-        if ((e.target as Element)?.closest?.('.tab-close')) return; // let close fire
+        if ((e.target as Element)?.closest?.('.tab-close, .tab-restart')) return; // let the button fire
         this.drag = { pointerId: e.pointerId, id, startX: e.clientX, startY: e.clientY, active: false };
         this.armPress(id);
     };
@@ -331,6 +332,19 @@ export class TabBar extends Component<Props, State> {
             return;
         }
         this.props.onSelect(id);
+        if (inMenu) this.setState({ menuOpen: false });
+    };
+
+    // Restart is destructive — whatever runs in the session dies — so it asks
+    // first. The native confirm is deliberate: it is modal on every platform,
+    // including the phone, and cannot be dismissed by the auto-hide timer.
+    private confirmRestart = (t: TabInfo, inMenu: boolean) => {
+        const ok = window.confirm(
+            `Restart session ${t.session}? Kills the running process and recreates the session with this tab's ` +
+                "route (cwd/agent). claude -c resumes the latest conversation in the route's cwd.",
+        );
+        if (!ok) return;
+        this.props.onRestart(t.id);
         if (inMenu) this.setState({ menuOpen: false });
     };
 
@@ -542,6 +556,11 @@ export class TabBar extends Component<Props, State> {
         // focus a tab from a session that is not on screen. Whole namespaces
         // are disposed of from the popover instead.
         const canClose = tabs.length > 1;
+        // ↻ on the active chip only in the strip, where width is scarce and the
+        // session you restart is normally the one you are looking at; on every
+        // row of the menu list, which has the room. tmux only — the wrapper
+        // cannot restart a screen session.
+        const canRestart = (active || inMenu) && backendFromSearch(t.search) === 'tmux';
         const dragging = this.state.dragId === t.id;
         const editing = this.state.editingId === t.id;
         return (
@@ -588,6 +607,19 @@ export class TabBar extends Component<Props, State> {
                 ) : (
                     <span class="tab-title">{t.title || t.session}</span>
                 )}
+                {canRestart && !editing ? (
+                    <button
+                        class="tab-restart"
+                        aria-label="Restart session"
+                        title="Restart session (recreate it with this tab's cwd/agent)"
+                        onClick={e => {
+                            e.stopPropagation();
+                            this.confirmRestart(t, inMenu);
+                        }}
+                    >
+                        ↻
+                    </button>
+                ) : null}
                 {canClose && !editing ? (
                     <button
                         class="tab-close"

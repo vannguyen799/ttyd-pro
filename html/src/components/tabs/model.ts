@@ -86,6 +86,11 @@ function escapeRegExp(s: string): string {
 export interface Route {
     session: string;
     backend: 'tmux' | 'screen';
+    // The query says more than which session to open: a leading cwd:/agent/
+    // idle:/noreap modifier, or an explicit tmux/screen session type. A query
+    // that only names the session (`name:x`, or a bare positional name) is not
+    // routed — it addresses a session without describing how to build it.
+    routed: boolean;
 }
 
 // Resolve a WS query string to the tmux/screen session it routes to — byte-for-
@@ -94,30 +99,40 @@ export interface Route {
 // drift apart (you type into one session while the UI shows another).
 //
 // Key subtlety the old `args.find('name:')` got wrong: the wrapper treats
-// name:/cwd:/codex[:]/claude[:] as *leading* modifiers only. It walks them
+// name:/cwd:/codex[:]/claude[:]/idle:/noreap/restart as *leading* modifiers only. It walks them
 // left-to-right until the first non-modifier token (the session spec), and a
 // later leading `name:` overwrites an earlier one. A `name:` sitting AFTER the
 // session spec is not a modifier there, so it must not win — matching the shell's
 // positional handling exactly.
+//
+// `restart` is skipped like any other leading modifier but deliberately does not
+// make a query `routed`: it is a one-shot instruction for a single connect, not
+// part of how a session is built (see withoutRestart()).
 export function parseRoute(search: string): Route {
     try {
         const args = new URLSearchParams(search).getAll('arg');
         let i = 0;
         let name = '';
         let explicit = false;
+        let routed = false;
         while (i < args.length) {
             const a = args[i];
             if (a.startsWith('name:')) {
                 name = a.slice('name:'.length); // last leading name: wins, as in the shell
                 explicit = true;
                 i++;
+            } else if (a === 'restart') {
+                i++;
             } else if (
                 a.startsWith('cwd:') ||
                 a === 'codex' ||
                 a.startsWith('codex:') ||
                 a === 'claude' ||
-                a.startsWith('claude:')
+                a.startsWith('claude:') ||
+                a.startsWith('idle:') ||
+                a === 'noreap'
             ) {
+                routed = true;
                 i++;
             } else {
                 break;
@@ -129,15 +144,38 @@ export function parseRoute(search: string): Route {
             // No session spec: keep whatever name: gave us (or fall through to main).
         } else if (spec === 'screen') {
             backend = 'screen';
+            routed = true;
             if (!explicit) name = args[i + 1] ?? '';
         } else if (spec === 'tmux') {
+            routed = true;
             if (!explicit) name = args[i + 1] ?? '';
         } else if (!explicit) {
             name = spec;
         }
-        return { session: sanitizeName(name) || 'main', backend };
+        return { session: sanitizeName(name) || 'main', backend, routed };
     } catch {
-        return { session: 'main', backend: 'tmux' };
+        return { session: 'main', backend: 'tmux', routed: false };
+    }
+}
+
+// A query string with every `arg=restart` removed. ttyd-session.sh reads
+// `restart` as "kill this session and build it again", so it must only ever
+// reach the server on the one connect the user asked for (the xterm adds it
+// itself, see Xterm.restartOnNextConnect). Stored in a tab's route it would
+// re-run on every reload, wake and reconnect — killing the session each time.
+// A query without one is returned untouched, so stored routes keep their exact
+// spelling and never churn a sync just from being re-encoded.
+export function withoutRestart(search: string): string {
+    try {
+        const params = new URLSearchParams(search);
+        if (!params.getAll('arg').includes('restart')) return search;
+        const kept = params.getAll('arg').filter(a => a !== 'restart');
+        params.delete('arg');
+        for (const a of kept) params.append('arg', a);
+        const rest = params.toString();
+        return rest ? `?${rest}` : '';
+    } catch {
+        return search;
     }
 }
 
@@ -259,7 +297,7 @@ export function tabIdFromHash(): string | null {
 // The tab representing however the page was actually opened. Preserves the full
 // original query string so all routing modifiers keep working.
 export function initialTabFromUrl(): TabInfo {
-    const search = window.location.search || '';
+    const search = withoutRestart(window.location.search || '');
     const session = sessionFromSearch(search);
     return makeTab(session, search, session);
 }
@@ -275,15 +313,18 @@ function defaultBar(): BarState {
     };
 }
 
-export function loadTabsState(): TabsState {
-    let saved: TabsState | null = null;
+// The tab list exactly as this browser stored it, before any reconciling.
+export function loadSavedTabs(): TabsState | null {
     try {
         const raw = localStorage.getItem(STORE_KEY);
-        if (raw) saved = JSON.parse(raw) as TabsState;
+        return raw ? (JSON.parse(raw) as TabsState) : null;
     } catch {
-        saved = null;
+        return null;
     }
-    return normalizeTabsState(saved);
+}
+
+export function loadTabsState(): TabsState {
+    return normalizeTabsState(loadSavedTabs());
 }
 
 // Turn a stored (or received) tab list into one this page can render: fill in
@@ -309,20 +350,32 @@ export function normalizeTabsState(saved: TabsState | null): TabsState {
     const tabs: TabInfo[] = saved.tabs.map(t => ({
         id: t.id || genTabId(),
         session: t.session || sessionFromSearch(t.search || ''),
-        search: t.search || `?arg=name:${t.session}`,
+        search: withoutRestart(t.search || '') || `?arg=name:${t.session}`,
         title: t.title || t.session || 'shell',
         renamed: !!t.renamed,
         group: t.group || legacyGroup,
     }));
 
-    const urlSearch = window.location.search || '';
+    const urlSearch = withoutRestart(window.location.search || '');
     // Only honor an explicit deep-link (has ?arg=...), not a bare reload.
     const hasExplicit = new URLSearchParams(urlSearch).getAll('arg').length > 0;
     let activeId = tabs.find(t => t.id === saved!.activeId)?.id || tabs[0].id;
     if (hasExplicit) {
-        const urlSession = sessionFromSearch(urlSearch);
+        const route = parseRoute(urlSearch);
+        const urlSession = route.session;
         const existing = tabs.find(t => t.session === urlSession);
         if (existing) {
+            // A link that describes the session (cwd:, agent, idle:/noreap,
+            // tmux/screen) is the current truth about it — the project moved,
+            // the agent flags changed — so it replaces the stored route rather
+            // than being thrown away in favour of whatever the tab was first
+            // opened with. A link that only names the session (the gateway's
+            // "Open" sends just `name:`) says nothing about how to build it, so
+            // the stored route stands. id/title/group/renamed are the tab's own
+            // and are kept either way. The terminal reconnects on its own when
+            // `search` changes (app.tsx keys it on the route), and the caller
+            // persists the update — see routesChanged().
+            if (route.routed) existing.search = urlSearch;
             activeId = existing.id;
             // A reload keeps the URL it was opened with, so a deep-link would
             // otherwise snap back to the entry tab every time — you would never
@@ -349,6 +402,17 @@ export function normalizeTabsState(saved: TabsState | null): TabsState {
     const seq: Record<string, number> = saved.seq && typeof saved.seq === 'object' ? { ...saved.seq } : {};
 
     return { tabs, activeId, bar, seq };
+}
+
+// Whether reconciling `saved` into `next` (normalizeTabsState) changed the route
+// of any tab it kept — a deep link re-pointing an existing tab, or a stray
+// `restart` scrubbed from a stored one. Reconciling is otherwise a pure view of
+// the stored list and never needs writing back, but a changed route does: left
+// unsaved, the next bare reload (or any other device) would open the old route
+// again, and the terminal with it in the old cwd.
+export function routesChanged(saved: TabsState | null, next: TabsState): boolean {
+    const before = new Map((saved?.tabs || []).map(t => [t.id, t.search]));
+    return next.tabs.some(t => before.has(t.id) && before.get(t.id) !== t.search);
 }
 
 // `json` lets a caller that already serialised this exact state pass it in

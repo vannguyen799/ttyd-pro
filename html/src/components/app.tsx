@@ -14,9 +14,11 @@ import {
     allocSession,
     backendFromSearch,
     clampOpacity,
+    loadSavedTabs,
     loadTabsState,
     makeTab,
     normalizeTabsState,
+    routesChanged,
     saveTabsState,
     spawnSearch,
     tabsInView,
@@ -101,6 +103,9 @@ interface AppState extends TabsState {
     // Tab ids that currently have a live Terminal (the active tab plus any
     // still within their warm window). Ephemeral — never persisted.
     live: string[];
+    // Per-tab restart count, folded into the Terminal's key so "Restart
+    // session" remounts it (fresh socket, carrying `restart` once). Ephemeral.
+    restarts: Record<string, number>;
 }
 
 export class App extends Component<Record<string, never>, AppState> {
@@ -112,14 +117,24 @@ export class App extends Component<Record<string, never>, AppState> {
     // Revision of the layout this page holds, so a write by another browser tab
     // of the same profile can be told from our own.
     private rev = 0;
+    // The page's deep link re-pointed a stored tab's route (see
+    // routesChanged). Written out once the server copy has been looked at, so
+    // the update lands on whichever list wins instead of racing it.
+    private rerouted = false;
+    // Tabs whose next Terminal mount should connect with `restart`. Taken (and
+    // so cleared) by that mount, which is what keeps a later wake or remount
+    // of the same tab from killing its session a second time.
+    private restartPending = new Set<string>();
 
     constructor() {
         super();
-        const base = loadTabsState();
+        const saved = loadSavedTabs();
+        const base = normalizeTabsState(saved);
+        this.rerouted = routesChanged(saved, base);
         this.published = JSON.stringify({ tabs: base.tabs, activeId: base.activeId, bar: base.bar, seq: base.seq });
         this.rev = loadRev();
         // Only the active tab starts live; the rest wake lazily when visited.
-        this.state = { ...base, live: [base.activeId] };
+        this.state = { ...base, live: [base.activeId], restarts: {} };
         // Publish before the first render so the vkbd's initial paint already
         // reads the correct active session.
         this.applyActiveGlobals(base);
@@ -144,15 +159,27 @@ export class App extends Component<Record<string, never>, AppState> {
 
     // Reconcile with the deployment-wide tab layout. Whichever side was edited
     // more recently wins outright — see tabs/sync.ts on why this is not a merge.
+    //
+    // A route the page's deep link changed is a real edit and gets a fresh
+    // revision; it is only stamped here, after the comparison, so a stale local
+    // list can never outrank a newer one from another device just because this
+    // page was opened with a link.
     private async syncFromServer() {
         const remote = await fetchRemote();
-        if (remote === null) return; // no endpoint, or nothing stored yet
+        const rerouted = this.rerouted;
+        this.rerouted = false;
+        if (remote === null) {
+            // No endpoint, or nothing stored yet — the local list is all there is.
+            if (rerouted) this.publish(this.state, nextRev(), true);
+            return;
+        }
 
         const localRev = loadRev();
         if (remote.rev <= localRev) {
             // Our copy is the newer one — make sure the server has it, which
             // also covers the very first run after --tabs-file is switched on.
-            if (localRev > remote.rev) this.publish(this.state, localRev, true);
+            if (rerouted) this.publish(this.state, nextRev(), true);
+            else if (localRev > remote.rev) this.publish(this.state, localRev, true);
             return;
         }
 
@@ -183,6 +210,9 @@ export class App extends Component<Record<string, never>, AppState> {
         this.syncUrlTab(adopted.activeId);
         for (const id of this.sleepTimers.keys()) this.cancelSleep(id);
         this.setState({ ...adopted, live: [adopted.activeId] });
+        // The adopted list went through this page's deep link too; if that
+        // re-pointed one of its tabs, the server copy is now behind.
+        if (routesChanged(remote.state, adopted)) this.publish(adopted, nextRev(), true);
     }
 
     // Hand the durable part of a state to both stores. The revision is what
@@ -224,7 +254,7 @@ export class App extends Component<Record<string, never>, AppState> {
         );
         for (const id of this.sleepTimers.keys()) if (!adopted.tabs.some(t => t.id === id)) this.cancelSleep(id);
 
-        const next: AppState = { ...adopted, activeId, live };
+        const next: AppState = { ...adopted, activeId, live, restarts: this.state.restarts };
         this.rev = rev;
         this.published = JSON.stringify({ tabs: next.tabs, activeId, bar: next.bar, seq: next.seq });
         this.applyActiveGlobals(next);
@@ -393,6 +423,28 @@ export class App extends Component<Record<string, never>, AppState> {
         this.commit({ ...this.state, tabs, live });
     }
 
+    // "Restart session": recreate the tab's tmux session from its route, which is
+    // the only way a changed cwd:/agent reaches panes that already run — tmux
+    // cannot move a live pane. Bumping the tab's restart count remounts its
+    // Terminal; the new one takes the pending flag and sends `restart` on that
+    // first connect only. The tab is focused (and woken, if it was asleep) so
+    // the user sees the session come back. The confirm lives in the tab bar.
+    @bind
+    private restartTab(id: string) {
+        if (!this.state.tabs.some(t => t.id === id)) return;
+        this.restartPending.add(id);
+        const prev = this.state.activeId;
+        const live = this.wake(this.state.live, id);
+        if (prev !== id) this.scheduleSleep(prev);
+        const restarts = { ...this.state.restarts, [id]: (this.state.restarts[id] ?? 0) + 1 };
+        this.commit({ ...this.state, activeId: id, live, restarts });
+    }
+
+    // One-shot: true for the first Terminal mount after restartTab(id).
+    private takeRestart(id: string): boolean {
+        return this.restartPending.delete(id);
+    }
+
     @bind
     private onTabTitle(id: string, title: string) {
         const clean = (title || '').trim();
@@ -476,7 +528,7 @@ export class App extends Component<Record<string, never>, AppState> {
     }
 
     render() {
-        const { tabs, activeId, bar, live } = this.state;
+        const { tabs, activeId, bar, live, restarts } = this.state;
         const active = this.activeTab(this.state);
         // The namespace in view is the active tab's group; the strip is always
         // scoped to it, so tabs of other sessions stay out of sight.
@@ -509,6 +561,7 @@ export class App extends Component<Record<string, never>, AppState> {
                     onRename={this.renameTab}
                     onSwitchGroup={this.switchGroup}
                     onCloseGroup={this.closeGroup}
+                    onRestart={this.restartTab}
                 />
                 <div class="term-stage">
                     {tabs
@@ -518,9 +571,13 @@ export class App extends Component<Record<string, never>, AppState> {
                                 {/* Sleeping tabs render no Terminal — socket + WebGL
                                 released until the tab is activated again. The
                                 active tab is always live, so its pane always
-                                has a Terminal. */}
+                                has a Terminal. Keyed on the route and the
+                                restart count: a live Terminal never re-reads
+                                wsUrl, so a re-pointed route or a restart has to
+                                remount it to reconnect. */}
                                 {live.includes(t.id) ? (
                                     <Terminal
+                                        key={`${t.id}|${t.search}|${restarts[t.id] ?? 0}`}
                                         id={`terminal-${t.id}`}
                                         active={t.id === activeId}
                                         wsUrl={wsUrlFor(t.search)}
@@ -530,6 +587,7 @@ export class App extends Component<Record<string, never>, AppState> {
                                         termOptions={termOptions}
                                         flowControl={flowControl}
                                         onTitle={title => this.onTabTitle(t.id, title)}
+                                        takeRestart={() => this.takeRestart(t.id)}
                                     />
                                 ) : null}
                             </div>

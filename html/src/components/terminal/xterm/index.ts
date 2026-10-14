@@ -168,6 +168,16 @@ export interface XtermOptions {
     termOptions: ITerminalOptions;
 }
 
+// `wsUrl` with `arg=restart` as its first arg. First, not last: ttyd-session.sh
+// only reads modifiers up to the session spec (`tmux <name>`, a positional
+// name), so a trailing one would be silently ignored on routes that have one.
+function withRestartArg(wsUrl: string): string {
+    const q = wsUrl.indexOf('?');
+    if (q < 0) return `${wsUrl}?arg=restart`;
+    const rest = wsUrl.slice(q + 1);
+    return `${wsUrl.slice(0, q)}?arg=restart${rest ? `&${rest}` : ''}`;
+}
+
 function toDisposable(f: () => void): IDisposable {
     return { dispose: f };
 }
@@ -232,6 +242,8 @@ export class Xterm {
     private autoReconnectSetup = false;
     private resumeDisposables: IDisposable[] = [];
     private pendingReconnectKey?: IDisposable;
+    // Send `restart` on the next connect() only — see restartOnNextConnect().
+    private restartNext = false;
 
     private writeFunc = (data: ArrayBuffer) => this.writeData(new Uint8Array(data));
     private fitRaf = 0;
@@ -1348,9 +1360,20 @@ color:#f0f0f0;background:rgba(16,16,16,0.55);border:3px dashed rgba(240,240,240,
         }
     }
 
+    // Make the next connect() ask ttyd-session.sh to recreate the session
+    // (`arg=restart`). One-shot by construction: connect() clears it as it
+    // builds the socket, so the reconnects that follow — startReconnect() after
+    // a drop, the visibility/online resume — attach to the recreated session
+    // instead of killing it again.
+    public restartOnNextConnect() {
+        this.restartNext = true;
+    }
+
     @bind
     public connect() {
-        this.socket = new WebSocket(this.options.wsUrl, ['tty']);
+        const restart = this.restartNext;
+        this.restartNext = false;
+        this.socket = new WebSocket(restart ? withRestartArg(this.options.wsUrl) : this.options.wsUrl, ['tty']);
         const { socket, register } = this;
 
         socket.binaryType = 'arraybuffer';
