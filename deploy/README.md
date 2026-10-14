@@ -518,6 +518,7 @@ The wrapper parses args as **`[modifier]... [session-type] [name]`**.
 | `claude:<args>` | Same as `claude`, plus forward `<args>` to Claude. Args are parsed with shell-style quoting (single/double quotes preserve spaces), then `%q`-quoted for safe embedding. The server injects no default flags. |
 | `idle:<spec>` | Reap this session after `<spec>` idle (`3d`, `12h`, `90m`, bare seconds) instead of the global default. Sticky — it survives later opens that don't repeat it. See [Idle Sessions](#idle-sessions-park-and-restore). |
 | `noreap` | Never reap this session, whatever its idle time. Also sticky. |
+| `restart` | One-shot: kill the live tmux session of this name (and drop any parked snapshot of it), then create it fresh with this URL's `cwd:` and agent modifier. This is what the tab bar's ↻ *Restart session* sends, on a single connect only — it is never stored in a tab's route, and an auto-reconnect never repeats it. Ignored for `screen`. |
 
 Examples:
 
@@ -533,11 +534,11 @@ Examples:
 
 > **First-create vs attach:** the `codex`/`claude` modifier only runs on the initial session creation. Reattaching to an existing session never re-runs the agent CLI.
 >
-> **cwd & tmux:** tmux stores default-directory per session. `cwd:` only affects the first window when the session is *created*; reattaching keeps the original cwd.
+> **cwd & tmux:** tmux stores default-directory per session. `cwd:` only affects the first window when the session is *created*; reattaching keeps the original cwd for panes that are already running (new windows follow the new `cwd:`). To move the whole session, use `restart` — with `claude:-c` in the route the agent resumes the latest conversation of the new cwd. A parked snapshot whose first pane sits in a different directory than an explicit `cwd:` is discarded instead of restored.
 
 - Opening the same URL in two tabs attaches both to the same session (shared view).
 - Session names are sanitized: only `A-Z a-z 0-9 . _ -` are kept, max 64 chars.
-- Every session the wrapper attaches to is registered under `$STATE/sessions/<name>`. Only registered sessions are candidates for the idle reaper — tmux sessions started by anything else are left alone.
+- Every session the wrapper attaches to is registered under `$STATE/owned/<name>`. Only registered sessions are candidates for the idle reaper — tmux sessions started by anything else are left alone.
 - If `tmux`/`screen` is missing, the wrapper falls back to `$SHELL`.
 
 > ttyd does not route on URL path segments natively. The `?arg=` query-string form is the native way to pass routing info. If you need literal `/screen/<name>` path URLs, put nginx/caddy in front and rewrite `/screen/NAME` → `/?arg=screen&arg=NAME`.
@@ -753,8 +754,12 @@ The reaper never touches a session it did not create. `ttyd-session.sh`
 registers every session it attaches to:
 
 ```
-~/.local/state/ttyd/sessions/<name>     owner / idle / noreap
+~/.local/state/ttyd/owned/<name>     owner / idle / noreap
 ```
+
+(`owned/`, not `sessions/`: `~/.local/state/ttyd/sessions` is ttyd-pro's own
+login-session file, so a registry directory of that name could never be
+created and every registration silently failed.)
 
 and anything absent from that registry is skipped, however idle — the gateway's
 `claude setup-token` window, a hand-rolled `tmux new` at an SSH prompt, and any
@@ -777,9 +782,9 @@ the ones that are yours, by name, once:
 
 ```bash
 for s in vt vtspec build-box; do
-    mkdir -p ~/.local/state/ttyd/sessions
+    mkdir -p ~/.local/state/ttyd/owned
     printf 'owner=ttyd-pro\nname=%s\nseen=%s\nidle=\nnoreap=0\n' \
-        "$s" "$(date +%s)" > ~/.local/state/ttyd/sessions/"$s"
+        "$s" "$(date +%s)" > ~/.local/state/ttyd/owned/"$s"
     tmux set-option -t "=$s:" @ttyd-pro 1
 done
 ```

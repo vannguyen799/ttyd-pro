@@ -37,6 +37,8 @@
 #   ttyd-snapshot.sh save <session> [reason]
 #   ttyd-snapshot.sh restore <session>
 #   ttyd-snapshot.sh has <session>          exit 0 when a snapshot exists
+#   ttyd-snapshot.sh dir <session>          the directory the restored session
+#                                           starts in (first window's first pane)
 #   ttyd-snapshot.sh list
 #   ttyd-snapshot.sh rm <session>
 #   ttyd-snapshot.sh prune [days]           drop snapshots older than N days
@@ -397,6 +399,36 @@ cmd_has() {
     [ -f "$(snap_dir "$name")/layout" ]
 }
 
+# The working directory a restore would create the session in: the first pane
+# of the lowest-numbered window, picked with the same sort order cmd_restore
+# walks the layout in. ttyd-session.sh compares it with an explicit cwd: to
+# decide whether the snapshot still matches the route asking for it.
+cmd_dir() {
+    local name snap first_win="" line dir
+    name="$(sanitize "${1:-}")"
+    [ -n "$name" ] || die "dir: session name required"
+    snap="$(snap_dir "$name")"
+    [ -f "$snap/layout" ] || die "dir: no snapshot for '$name'"
+
+    while IFS= read -r line; do
+        split_tabs "$line"
+        [ "${#FIELDS[@]}" -ge 7 ] || continue
+        first_win="${FIELDS[2]}"
+        break
+    done < <(grep '^window' "$snap/layout" | sort -t"$TAB" -k3,3n)
+    [ -n "$first_win" ] || die "dir: snapshot for '$name' has no windows"
+
+    while IFS= read -r line; do
+        split_tabs "$line"
+        [ "${#FIELDS[@]}" -ge 11 ] || continue
+        [ "${FIELDS[2]}" = "$first_win" ] || continue
+        dir="${FIELDS[7]#:}"
+        printf '%s\n' "${dir//\\ / }"
+        return 0
+    done < <(grep '^pane' "$snap/layout" | sort -t"$TAB" -k6,6n)
+    die "dir: snapshot for '$name' has no panes in window $first_win"
+}
+
 cmd_list() {
     [ -d "$SNAP_ROOT" ] || return 0
     local d name saved reason windows panes
@@ -441,6 +473,7 @@ case "${1:-}" in
     save) shift; cmd_save "$@" ;;
     restore) shift; cmd_restore "$@" ;;
     has) shift; cmd_has "$@" ;;
+    dir) shift; cmd_dir "$@" ;;
     list) shift; cmd_list "$@" ;;
     rm) shift; cmd_rm "$@" ;;
     prune) shift; cmd_prune "$@" ;;

@@ -24,7 +24,7 @@
 # watching — reaping those would close sessions out from under a live viewer.
 #
 # Only sessions ttyd-pro created are ever touched. ttyd-session.sh registers
-# every session it attaches to under $STATE/sessions/<name>, and a session with
+# every session it attaches to under $STATE/owned/<name>, and a session with
 # no entry there is left alone no matter how idle it is — the gateway's
 # `claude setup-token` window and anything started by hand at an SSH prompt are
 # not ours to close. `--all` overrides that for a one-off sweep.
@@ -138,7 +138,7 @@ if [ -n "${TMUX:-}" ]; then
     SELF_SESSION="$(tmux display-message -p '#{session_name}' 2>/dev/null)"
 fi
 
-OWNED_DIR="$STATE_DIR/sessions"
+OWNED_DIR="$STATE_DIR/owned"
 
 # Per-session settings from the registry, into REG_*. Absent file → not ours.
 REG_OWNED=0

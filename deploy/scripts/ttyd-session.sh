@@ -31,6 +31,12 @@
 #                         Sticky: set once, it survives later opens of the same
 #                         name that do not pass idle: again.
 #   noreap                never reap this session, whatever its idle time
+#   restart               one-shot: kill the live session (and drop any parked
+#                         snapshot of it) before attaching, so it is recreated
+#                         from scratch with this URL's cwd: and agent modifier.
+#                         The UI's "Restart session" sends it on a single
+#                         connect only; it never belongs in a stored route.
+#                         Ignored (with a warning) for screen sessions.
 #
 # Session spec (optional — default = tmux main):
 #   (none)                tmux new -A -s main
@@ -50,7 +56,12 @@
 #
 # Notes:
 #   • First-create vs attach: if the tmux session already exists, we attach
-#     only — the agent CLI will NOT be re-run.
+#     only — the agent CLI will NOT be re-run. `restart` is the way to get a
+#     changed cwd:/agent route applied to a session that already exists.
+#   • A parked snapshot (see ttyd-snapshot.sh) is restored in place of a fresh
+#     session, unless an explicit cwd: names a different directory than the
+#     snapshot's first pane — then the snapshot is discarded, because restoring
+#     it would put the session back in the directory the route moved away from.
 #   • <path> must be an existing directory; otherwise a warning is logged
 #     and the wrapper keeps ttyd's launch cwd.
 #   • A new claude session is given an explicit --session-id so the
@@ -58,7 +69,7 @@
 #     (see resurrect-agent-hook.sh).
 #   • Session names are sanitized: only [A-Za-z0-9._-], max 64 chars.
 #   • Every session this wrapper attaches to is registered under
-#     $STATE/sessions/<name>. The idle reaper only ever touches sessions in
+#     $STATE/owned/<name>. The idle reaper only ever touches sessions in
 #     that registry, so tmux sessions started by anything else are left alone.
 #   • Agent args are split on whitespace then %q-quoted to prevent
 #     injection into the tmux shell command.
@@ -79,8 +90,10 @@ LIBEXEC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../libexec" && pwd)"
 
 # Parked sessions. ttyd-reap-idle.sh snapshots a session before closing it, so
 # a name with no live tmux session may still have one on disk waiting to be
-# rebuilt (see ttyd-snapshot.sh).
-SNAPSHOT_TOOL="$(dirname "${BASH_SOURCE[0]}")/ttyd-snapshot.sh"
+# rebuilt (see ttyd-snapshot.sh). Resolved to an absolute path up front, like
+# LIBEXEC_DIR: the cwd: modifier chdirs before this is used, which would break
+# a relative one whenever the wrapper itself was invoked by a relative path.
+SNAPSHOT_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ttyd-snapshot.sh"
 
 # Registry of sessions this wrapper owns, one file per session name.
 #
@@ -94,8 +107,13 @@ SNAPSHOT_TOOL="$(dirname "${BASH_SOURCE[0]}")/ttyd-snapshot.sh"
 # `@ttyd-pro` marker set at creation is simply gone, which would quietly
 # exempt every restored session from reaping forever. The file survives that,
 # and carries the per-session `idle:`/`noreap` settings for the same reason.
+#
+# `owned/`, not `sessions/`: ttyd-pro itself keeps its login sessions in a
+# regular FILE at $STATE_DIR/sessions (src/server.c, --session-file), so a
+# directory of that name can never be created there and every registration
+# would silently fail.
 STATE_DIR="${TTYD_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ttyd}"
-OWNED_DIR="$STATE_DIR/sessions"
+OWNED_DIR="$STATE_DIR/owned"
 
 SHELL_CMD="${SHELL:-/bin/bash}"
 
@@ -133,6 +151,7 @@ NAME_EXPLICIT=0
 IDLE_SPEC=""
 NO_REAP=0
 CWD_SET=0
+RESTART=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -148,6 +167,10 @@ while [ $# -gt 0 ]; do
             ;;
         noreap)
             NO_REAP=1
+            shift
+            ;;
+        restart)
+            RESTART=1
             shift
             ;;
         cwd:*)
@@ -248,6 +271,12 @@ if [ "$MODE" = "screen" ]; then
         echo "warn: agent modifier is ignored for screen sessions" >&2
         TITLE="$NAME"
     fi
+    # `screen -S <name> -X quit` matches session names loosely, so it could
+    # close a different session that merely shares a prefix. Not worth the risk
+    # for a backend nothing here creates; reattach as usual instead.
+    if [ "$RESTART" = 1 ]; then
+        echo "warn: restart is ignored for screen sessions" >&2
+    fi
     set_browser_title "$TITLE"
     exec screen -xRR "$NAME"
 fi
@@ -342,6 +371,20 @@ attach_existing() {
     exec tmux attach-session -t "$TGT"
 }
 
+# Restart: throw away whatever runs under this name — the live session and any
+# snapshot the reaper parked for it — so the steps below fall through to a
+# brand-new session built from this URL's route. That is the only way a
+# changed cwd: or agent modifier reaches an existing session's panes: tmux
+# cannot move a running pane to another directory. `claude:-c` in the route
+# resumes the latest conversation of the new cwd, so the agent is not lost.
+if [ "$RESTART" = 1 ]; then
+    printf 'restarting session %s...\n' "$NAME" >&2
+    tmux kill-session -t "$TGT" 2>/dev/null
+    if [ -x "$SNAPSHOT_TOOL" ]; then
+        "$SNAPSHOT_TOOL" rm "$NAME" >/dev/null 2>&1
+    fi
+fi
+
 # Existing session → always just attach.
 if tmux has-session -t "$TGT" 2>/dev/null; then
     attach_existing
@@ -353,7 +396,25 @@ fi
 # agent conversations, instead of the blank shell a plain `new-session` would
 # hand over. A snapshot that fails to restore is not fatal; fall through and
 # create the session fresh rather than leaving the user with no terminal.
-if [ -x "$SNAPSHOT_TOOL" ] && "$SNAPSHOT_TOOL" has "$NAME"; then
+#
+# An explicit cwd: that names a different directory than the snapshot was
+# taken in wins over the snapshot: the route has moved on, and restoring would
+# rebuild the session in the directory it moved away from. Compared as
+# physical paths, since the snapshot holds tmux's pane_current_path (always
+# resolved) while $PWD keeps any symlink the cwd: went through.
+if [ "$RESTART" = 0 ] && [ "$CWD_SET" = 1 ] && [ -x "$SNAPSHOT_TOOL" ] && "$SNAPSHOT_TOOL" has "$NAME"; then
+    # No dir on record (a snapshot that predates `dir`, or a garbled layout):
+    # nothing to compare against, so keep it rather than lose it on a guess.
+    SNAP_DIR="$("$SNAPSHOT_TOOL" dir "$NAME" 2>/dev/null)"
+    SNAP_DIR_REAL=""
+    [ -n "$SNAP_DIR" ] && SNAP_DIR_REAL="$(cd "$SNAP_DIR" 2>/dev/null && pwd -P)"
+    if [ -n "$SNAP_DIR" ] && [ "$SNAP_DIR_REAL" != "$(pwd -P)" ]; then
+        printf 'discarding saved session %s (saved in %s, route asks for %s)\n' \
+            "$NAME" "${SNAP_DIR:-?}" "$PWD" >&2
+        "$SNAPSHOT_TOOL" rm "$NAME" >/dev/null 2>&1
+    fi
+fi
+if [ "$RESTART" = 0 ] && [ -x "$SNAPSHOT_TOOL" ] && "$SNAPSHOT_TOOL" has "$NAME"; then
     printf 'restoring saved session %s...\n' "$NAME" >&2
     if "$SNAPSHOT_TOOL" restore "$NAME" >/dev/null 2>&1 && tmux has-session -t "$TGT" 2>/dev/null; then
         attach_existing
