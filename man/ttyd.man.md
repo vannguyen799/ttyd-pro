@@ -89,6 +89,9 @@ ttyd 1 "September 2016" ttyd "User Manual"
   --session-file <file>
       File the issued login sessions are kept in, so they survive a restart (default: $XDG_STATE_HOME/ttyd/sessions, use `''` to keep them in memory only)
 
+  --cookie-partitioned
+      Send the login cookie as SameSite=None; Secure; Partitioned when the request arrived over https (TLS, or X-Forwarded-Proto: https), so a login survives inside a cross-site iframe. Plain http keeps SameSite=Lax. Can also be enabled with the environment variable TTYD_COOKIE_PARTITIONED=1
+
   -P, --ping-interval
       Websocket ping interval(sec) (default: 5)
 

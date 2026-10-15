@@ -61,7 +61,7 @@ static lws_retry_bo_t retry = {
 
 // Options with no short form. Numbered past the ASCII range so getopt_long
 // hands them back without colliding with a letter.
-enum { OPT_TABS_FILE = 1000, OPT_SESSION_FILE, OPT_AUTH_MAX_AGE };
+enum { OPT_TABS_FILE = 1000, OPT_SESSION_FILE, OPT_AUTH_MAX_AGE, OPT_COOKIE_PARTITIONED };
 
 // How long a login is remembered by default. Browsers forget basic-auth
 // credentials on a whim, and every time they do it is another password prompt;
@@ -85,6 +85,7 @@ static const struct option options[] = {{"port", required_argument, NULL, 'p'},
                                         {"tabs-file", required_argument, NULL, OPT_TABS_FILE},
                                         {"session-file", required_argument, NULL, OPT_SESSION_FILE},
                                         {"auth-max-age", required_argument, NULL, OPT_AUTH_MAX_AGE},
+                                        {"cookie-partitioned", no_argument, NULL, OPT_COOKIE_PARTITIONED},
 #if LWS_LIBRARY_VERSION_NUMBER >= 4000000
                                         {"ping-interval", required_argument, NULL, 'P'},
 #endif
@@ -140,6 +141,7 @@ static void print_help() {
           "        --tabs-file         File the web UI stores its tab layout in, served over /tabs (default: disabled, layout stays per-browser)\n"
           "        --auth-max-age      How long a successful login is remembered in a cookie, suffix s/m/h/d (default: 30d, use `0` to ask for the password every time the browser forgets it)\n"
           "        --session-file      File the issued login sessions are kept in, so they survive a restart (default: $XDG_STATE_HOME/ttyd/sessions, use `''` to keep them in memory only)\n"
+          "        --cookie-partitioned  Send the login cookie as SameSite=None; Partitioned over https, so it works with ttyd in a cross-site iframe (env: TTYD_COOKIE_PARTITIONED=1)\n"
 #if LWS_LIBRARY_VERSION_NUMBER >= 4000000
           "    -P, --ping-interval     Websocket ping interval(sec) (default: 5)\n"
 #endif
@@ -184,6 +186,7 @@ static void print_config() {
       lwsl_notice("  login remembered for: %d seconds\n", server->auth_max_age);
       lwsl_notice("  session file: %s\n", server->session_file != NULL ? server->session_file : "(memory only)");
       lwsl_notice("  one-time login links: POST %s\n", endpoints.login);
+      if (server->cookie_partitioned) lwsl_notice("  login cookie: partitioned (cross-site embedding)\n");
     } else {
       lwsl_notice("  login remembered for: disabled\n");
     }
@@ -208,6 +211,11 @@ static struct server *server_new(int argc, char **argv, int start) {
   ts->client_count = 0;
   ts->sig_code = SIGHUP;
   ts->auth_max_age = DEFAULT_AUTH_MAX_AGE;
+  // Also read from the environment: whatever launches ttyd can then ask for it
+  // without knowing whether the binary is new enough to accept the flag, which
+  // an older one would refuse to start over.
+  const char *partitioned = getenv("TTYD_COOKIE_PARTITIONED");
+  ts->cookie_partitioned = partitioned != NULL && partitioned[0] != '\0' && strcmp(partitioned, "0") != 0;
   snprintf(ts->terminal_type, sizeof(ts->terminal_type), "%s", "xterm-256color");
   get_sig_name(ts->sig_code, ts->sig_name, sizeof(ts->sig_name));
   if (start == argc) return ts;
@@ -592,6 +600,9 @@ int main(int argc, char **argv) {
       case OPT_AUTH_MAX_AGE:
         server->auth_max_age = parse_duration("auth-max-age", optarg);
         if (server->auth_max_age < 0) return -1;
+        break;
+      case OPT_COOKIE_PARTITIONED:
+        server->cookie_partitioned = true;
         break;
       case 'b': {
         char path[128];

@@ -430,17 +430,33 @@ static bool cookie_token(struct lws *wsi, char *out) {
 // of the site. Secure only when the request actually arrived over TLS: the
 // usual deployment is plain HTTP behind a tunnel, and a browser drops a Secure
 // cookie that came over http — which would mean the password prompt forever.
+//
+// Lax is never sent from inside a cross-site <iframe>, so a ttyd embedded in
+// another site's page would ask for the password on every load.
+// --cookie-partitioned switches a secure response to SameSite=None plus
+// Partitioned (CHIPS): the browser keys the cookie to the top-level site, so a
+// page that frames or posts to ttyd from anywhere else starts from its own empty
+// jar, which keeps cross-site requests about as unauthenticated as Lax did.
+// None is refused without Secure, so plain http keeps Lax either way.
 static int add_session_cookie(struct lws *wsi, struct pss_http *pss, unsigned char **p, unsigned char *end) {
   if (pss->cookie[0] == '\0') return 0;
 
   char proto[16];
   bool secure = lws_is_ssl(wsi) || (lws_hdr_custom_copy(wsi, proto, sizeof(proto), "x-forwarded-proto:", 18) > 0 &&
                                     !strcmp(proto, "https"));
+  const char *same_site = !secure                     ? "SameSite=Lax"
+                          : server->cookie_partitioned ? "SameSite=None; Secure; Partitioned"
+                                                       : "SameSite=Lax; Secure";
 
-  char value[256];
-  int n = snprintf(value, sizeof(value), "%s=%s; Path=%s; Max-Age=%d; HttpOnly; SameSite=Lax%s", AUTH_COOKIE,
-                   pss->cookie, endpoints.parent[0] ? endpoints.parent : "/", server->auth_max_age,
-                   secure ? "; Secure" : "");
+  // Room for the longest base path (128) and attribute tail with plenty spare;
+  // a cut-off header would be worse than none, so that case sends no cookie.
+  char value[512];
+  int n = snprintf(value, sizeof(value), "%s=%s; Path=%s; Max-Age=%d; HttpOnly; %s", AUTH_COOKIE, pss->cookie,
+                   endpoints.parent[0] ? endpoints.parent : "/", server->auth_max_age, same_site);
+  if (n < 0 || n >= (int)sizeof(value)) {
+    lwsl_warn("session: Set-Cookie does not fit, issuing no cookie\n");
+    return 0;
+  }
 
   return lws_add_http_header_by_name(wsi, (unsigned char *)"set-cookie:", (unsigned char *)value, n, p, end);
 }

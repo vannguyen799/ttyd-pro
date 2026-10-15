@@ -235,6 +235,7 @@ OPTIONS:
     -B, --browser           Open terminal with the default system browser
     -I, --index             Custom index.html path
     -b, --base-path         Expected base path for requests coming from a reverse proxy (eg: /mounted/here, max length: 128)
+        --cookie-partitioned  Send the login cookie as SameSite=None; Partitioned over https, so it works with ttyd in a cross-site iframe (env: TTYD_COOKIE_PARTITIONED=1)
     -P, --ping-interval     Websocket ping interval(sec) (default: 5)
     -6, --ipv6              Enable IPv6 support
     -S, --ssl               Enable SSL
@@ -285,6 +286,20 @@ whatever issues these links is down. The endpoint needs the session cookie to
 be what gets a request in, so it answers `404` under `--auth-max-age 0` (no
 cookies) and under `--auth-header` (a proxy decides, and it will not look at
 ttyd's cookie).
+
+**Embedding in another site.** The login cookie is `SameSite=Lax`, which a
+browser never sends from inside a cross-site `<iframe>` — the link logs in, and
+the very next request inside the frame is asked for the password again. Start
+ttyd with `--cookie-partitioned` (or `TTYD_COOKIE_PARTITIONED=1` in its
+environment, which a launcher can set without knowing whether the binary is new
+enough to accept the flag) and a login over https gets `SameSite=None; Secure;
+Partitioned` instead. Partitioned (CHIPS) means the browser files the cookie
+under the top-level site that framed ttyd, so a page on any other site starts
+from an empty jar. Over plain http the cookie stays `Lax`: browsers refuse
+`SameSite=None` without `Secure`. ttyd needs to see the https — either TLS of its
+own or `X-Forwarded-Proto: https` from the proxy in front. Browsers that block
+third-party cookies outright and do not honour `Partitioned` (Safari) still
+prompt inside the frame.
 
 **What the browser receives is a full login, not a scoped one.** A logged-in
 page reads `/token` to get the credential it replays on reconnect, so whoever

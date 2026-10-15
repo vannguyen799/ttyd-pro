@@ -101,6 +101,7 @@ struct server {
   char *tabs_file;         // where the UI's tab layout is stored (NULL = /tabs disabled)
   char *session_file;      // where issued login sessions are kept (NULL = memory only)
   int auth_max_age;        // how long a login cookie stays valid, in seconds (0 = no cookie)
+  bool cookie_partitioned; // secure login cookie is SameSite=None + Partitioned, for cross-site iframes
   char *command;           // full command line
   char **argv;             // command with arguments
   int argc;                // command + arguments count
