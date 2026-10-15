@@ -25,9 +25,6 @@ export const GROUPS: KeyGroup[] = [
                     { label: 'Esc', action: { type: 'named', key: 'esc' } },
                     { label: 'Tab', action: { type: 'named', key: 'tab' } },
                     { label: 'Ctrl', action: { type: 'mod', mod: 'ctrl' }, class: 'mod' },
-                    { label: 'Shift', action: { type: 'mod', mod: 'shift' }, class: 'mod' },
-                    { label: 'Alt', action: { type: 'mod', mod: 'alt' }, class: 'mod' },
-                    { label: 'Super', action: { type: 'mod', mod: 'meta' }, class: 'mod' },
                     {
                         label: '←',
                         sub: 'hold',
@@ -68,44 +65,18 @@ export const GROUPS: KeyGroup[] = [
                 keys: [
                     { label: 'Home', action: { type: 'named', key: 'home' } },
                     { label: 'End', action: { type: 'named', key: 'end' } },
-                    { label: 'PgUp', action: { type: 'named', key: 'pgup' } },
-                    { label: 'PgDn', action: { type: 'named', key: 'pgdn' } },
                     { label: '⌫', sub: 'hold', action: { type: 'named', key: 'backspace' }, repeat: true },
                     { label: 'Del', action: { type: 'named', key: 'delete' } },
-                    { label: 'Ins', action: { type: 'named', key: 'insert' } },
                     { label: '^C', sub: 'int', action: { type: 'send', bytes: '\x03' } },
-                    { label: '^D', sub: 'eof', action: { type: 'send', bytes: '\x04' } },
                     { label: '^Z', sub: 'sus', action: { type: 'send', bytes: '\x1a' } },
-                    { label: '^L', sub: 'clr', action: { type: 'send', bytes: '\x0c' } },
-                ],
-            },
-        ],
-    },
-    {
-        id: 'readline',
-        title: 'Readline & clipboard',
-        rows: [
-            {
-                keys: [
-                    { label: '^R', sub: 'hist', action: { type: 'send', bytes: '\x12' } },
-                    { label: '^W', sub: 'del-w', action: { type: 'send', bytes: '\x17' } },
-                    { label: '^U', sub: 'del-l', action: { type: 'send', bytes: '\x15' } },
-                    { label: '^A', sub: 'bol', action: { type: 'send', bytes: '\x01' } },
-                    { label: '^E', sub: 'eol', action: { type: 'send', bytes: '\x05' } },
-                    { label: '^K', sub: 'kill', action: { type: 'send', bytes: '\x0b' } },
-                    { label: 'Select', sub: 'tap×2', action: { type: 'selectmode' }, class: 'mod' },
-                    { label: 'Copy', sub: '^⇧C', action: { type: 'copy' } },
-                    { label: 'Paste', sub: '^⇧V', action: { type: 'paste' } },
                     { label: '📎', sub: 'file', action: { type: 'pasteimage' } },
-                    { label: 'F1', action: { type: 'named', key: 'f1' } },
-                    { label: 'F2', action: { type: 'named', key: 'f2' } },
                 ],
             },
         ],
     },
     {
         id: 'fn',
-        title: 'Scroll & function',
+        title: 'Scroll',
         rows: [
             {
                 keys: [
@@ -123,14 +94,6 @@ export const GROUPS: KeyGroup[] = [
                         class: 'scroll',
                         flex: 2,
                     },
-                    { label: 'F3', action: { type: 'named', key: 'f3' } },
-                    { label: 'F4', action: { type: 'named', key: 'f4' } },
-                    { label: 'F5', action: { type: 'named', key: 'f5' } },
-                    { label: 'F6', action: { type: 'named', key: 'f6' } },
-                    { label: 'F7', action: { type: 'named', key: 'f7' } },
-                    { label: 'F8', action: { type: 'named', key: 'f8' } },
-                    { label: 'F11', action: { type: 'named', key: 'f11' } },
-                    { label: 'F12', action: { type: 'named', key: 'f12' } },
                 ],
             },
         ],
@@ -186,29 +149,6 @@ export const GROUPS: KeyGroup[] = [
         rows: [
             {
                 keys: [
-                    {
-                        // Scroll via a synthesized wheel event, NOT prefix+C-p. The
-                        // panes here usually run a full-screen app (Claude Code, vim,
-                        // htop) on the terminal's ALTERNATE screen — where tmux
-                        // copy-mode has no scrollback at all, so prefix+C-p/C-n enter
-                        // an empty copy-mode and nothing scrolls. A wheel, with tmux
-                        // mouse-on, is instead routed by tmux to the foreground app
-                        // (it scrolls its own transcript) or, in a bare shell, turned
-                        // into a copy-mode scroll. Same mechanism as the "fn" group's
-                        // ▲/▼ Scroll keys — correct in both cases.
-                        label: '▲',
-                        sub: 'scroll',
-                        action: { type: 'scroll', by: 'line', dir: -1 },
-                        class: 'tmux',
-                        repeat: true,
-                    },
-                    {
-                        label: '▼',
-                        sub: 'scroll',
-                        action: { type: 'scroll', by: 'line', dir: 1 },
-                        class: 'tmux',
-                        repeat: true,
-                    },
                     {
                         // Jump to the end / live bottom by sending a plain Ctrl+End
                         // (CSI 1;5F) straight to the app — no tmux prefix. This is the

@@ -54,7 +54,7 @@ function defaultVisible(): boolean {
 // (Claude/Codex/tmux) when the bar is opened. Touch devices get every
 // group. This only seeds the initial disabledGroups — users can re-enable
 // any of them from settings, and a stored config overrides this entirely.
-const DESKTOP_REDUNDANT_GROUPS = ['keys', 'edit', 'readline', 'fn'];
+const DESKTOP_REDUNDANT_GROUPS = ['keys', 'edit', 'fn'];
 
 function defaultDisabledGroups(): string[] {
     return isCoarse() ? [] : DESKTOP_REDUNDANT_GROUPS.slice();
